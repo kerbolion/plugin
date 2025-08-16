@@ -377,7 +377,7 @@ class ModularFramework {
                 this.showMessage(`📱 Sin conexión - Los datos se sincronizarán automáticamente cuando se restaure la conexión`);
             }
             this.syncTimeout = null;
-        }, 5000);
+        }, 100);
 
         console.log(`⏱️ Sincronización automática programada en 5 segundos para ${this.pendingSync.size} elemento(s)`);
         console.log(`📊 Datos que se sincronizarán:`, { moduleId, dataSize: JSON.stringify(data).length });
