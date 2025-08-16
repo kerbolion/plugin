@@ -118,11 +118,15 @@ class TasksModule {
         this.setupEventListeners();
         this.renderTasks();
         this.renderProjects();
+        
+        // Programar todas las alertas activas al inicializar
+        this.scheduleAllActiveAlerts();
         this.renderLabels();
         this.updateCounts();
         
         // Inicializar actualización automática de tiempo restante
         this.startTimeRemainingUpdater();
+        
     }
     
     async loadData() {
@@ -1451,6 +1455,9 @@ class TasksModule {
         this.renderTasks();
         this.renderLabels();
         this.updateCounts();
+        
+        // Reprogramar todas las alertas para asegurar que las nuevas/editadas estén activas
+        this.scheduleAllActiveAlerts();
     }
 
     // ===== RENDERIZADO =====
@@ -1714,6 +1721,44 @@ class TasksModule {
         });
         
         this.renderProjects();
+    }
+    
+    // ===== PROGRAMACIÓN GLOBAL DE ALERTAS =====
+    scheduleAllActiveAlerts() {
+        console.log('🔔 Programando todas las alertas activas al inicializar...');
+        
+        // Inicializar alertTimeouts si no existe
+        if (!this.alertTimeouts) {
+            this.alertTimeouts = {};
+        }
+        
+        const now = new Date();
+        let scheduledCount = 0;
+        
+        // Recorrer todas las tareas y programar sus alertas
+        this.data.tasks.forEach(task => {
+            if (task.alerts && task.alerts.length > 0) {
+                task.alerts.forEach(alert => {
+                    if (alert.active) {
+                        const alertDate = new Date(alert.alertDate);
+                        if (alertDate > now) {
+                            this.scheduleAlert(alert);
+                            scheduledCount++;
+                            console.log(`📅 Alerta programada: "${alert.title}" para ${alertDate.toLocaleString()}`);
+                        }
+                    }
+                });
+            }
+        });
+        
+        console.log(`✅ Total de alertas programadas: ${scheduledCount}`);
+    }
+    
+    // Función helper para verificar si una alerta ya está guardada en una tarea
+    isAlertSavedInTask(alert) {
+        return this.data.tasks.some(task => 
+            task.alerts && task.alerts.some(savedAlert => savedAlert.id === alert.id)
+        );
     }
     
     // ===== NAVEGACIÓN =====
@@ -2226,16 +2271,25 @@ class TasksModule {
         if (newSubtaskInput) newSubtaskInput.value = '';
         if (modalAlertsList) modalAlertsList.innerHTML = '';
         
-        // Limpiar alertas del modal
+        // Verificar alertas temporales ANTES de limpiar currentTaskAlerts
+        if (this.currentTaskAlerts && this.currentTaskAlerts.length > 0) {
+            this.currentTaskAlerts.forEach(alert => {
+                // Solo cancelar alertas que NO han sido guardadas en ninguna tarea
+                if (alert.id && this.alertTimeouts && this.alertTimeouts[alert.id] && !this.isAlertSavedInTask(alert)) {
+                    clearTimeout(this.alertTimeouts[alert.id]);
+                    delete this.alertTimeouts[alert.id];
+                    console.log('🧹 Cancelada alerta temporal no guardada:', alert.title);
+                }
+            });
+        }
+        
+        // Limpiar alertas del modal (solo la referencia temporal)
         this.currentTaskAlerts = [];
         
-        // Cancelar timeouts de alertas si existen
-        if (this.alertTimeouts) {
-            Object.values(this.alertTimeouts).forEach(timeout => {
-                clearTimeout(timeout);
-            });
-            this.alertTimeouts = {};
-        }
+        // IMPORTANTE: NO cancelar alertas de tareas guardadas
+        // Las alertas activas de tareas guardadas deben seguir funcionando
+        const activeAlertsCount = Object.keys(this.alertTimeouts || {}).length;
+        console.log(`✅ Modal cerrado - ${activeAlertsCount} alertas activas siguen programadas`);
     }
     
     setupModalEventListeners() {
@@ -3392,12 +3446,21 @@ class TasksModule {
             this.alertTimeouts = {};
         }
         
+        // Cancelar timeout existente si ya existe para esta alerta
+        if (this.alertTimeouts[alert.id]) {
+            console.log('🧹 Cancelando timeout existente para:', alert.title);
+            clearTimeout(this.alertTimeouts[alert.id]);
+            delete this.alertTimeouts[alert.id];
+        }
+        
         const alertDate = new Date(alert.alertDate);
         const now = new Date();
         const timeUntilAlert = alertDate.getTime() - now.getTime();
         
         if (timeUntilAlert > 0) {
+            console.log('🕒 Programando alerta:', alert.title, 'en', timeUntilAlert, 'ms');
             this.alertTimeouts[alert.id] = setTimeout(() => {
+                console.log('⏰ TIMEOUT DISPARADO para alerta:', alert.title);
                 this.executeAlert(alert);
             }, timeUntilAlert);
             
@@ -3452,9 +3515,12 @@ class TasksModule {
     }
     
     async executeAlert(alert) {
-        console.log('🚨 Ejecutando alerta:', alert.title);
+        console.log('🚨 EJECUTANDO ALERTA:', alert.title);
+        console.log('📋 Datos de la alerta:', alert);
+        
         
         // Enviar notificación push
+        console.log('📲 Llamando a sendPushNotification...');
         await this.sendPushNotification(alert);
         
         // Ejecutar webhook si está configurado
@@ -3477,12 +3543,18 @@ class TasksModule {
     }
     
     async sendPushNotification(alert) {
+        console.log('🔔 INICIANDO sendPushNotification para:', alert.title);
         try {
+            // Verificar si el documento está visible (para forzar notificación si está oculto)
+            const isHidden = document.hidden || document.visibilityState !== 'visible';
+            console.log('📱 Estado de visibilidad de la página:', isHidden ? 'oculta' : 'visible');
+            
             // Solicitar permisos si no los tenemos
             if (!('Notification' in window)) {
                 console.warn('Este navegador no soporta notificaciones');
                 return;
             }
+            console.log('✅ Navegador soporta notificaciones');
             
             let permission = Notification.permission;
             if (permission === 'default') {
@@ -3490,48 +3562,30 @@ class TasksModule {
             }
             
             if (permission !== 'granted') {
-                console.warn('Permisos de notificación denegados');
+                console.warn('Permisos de notificación denegados. Permission:', permission);
                 return;
             }
+            console.log('✅ Permisos de notificación otorgados');
             
             // Registrar service worker si no está registrado
             if ('serviceWorker' in navigator) {
+                console.log('🔧 Registrando service worker...');
                 try {
-                    const swCode = `
-                        self.addEventListener('install', function(event) {
-                            console.log('SW: Instalando...');
-                            self.skipWaiting();
-                        });
-                        
-                        self.addEventListener('activate', function(event) {
-                            console.log('SW: Activando...');
-                            event.waitUntil(self.clients.claim());
-                        });
-                        
-                        self.addEventListener('notificationclick', function(event) {
-                            console.log('SW: Notificación clickeada');
-                            event.notification.close();
-                            
-                            event.waitUntil(
-                                clients.matchAll().then(function(clientList) {
-                                    if (clientList.length > 0) {
-                                        return clientList[0].focus();
-                                    }
-                                    return clients.openWindow('/');
-                                })
-                            );
-                        });
-                    `;
+                    // Primero limpiar cualquier service worker anterior
+                    const registrations = await navigator.serviceWorker.getRegistrations();
+                    for (let registration of registrations) {
+                        await registration.unregister();
+                        console.log('🧹 Service worker anterior desregistrado');
+                    }
                     
-                    const swBlob = new Blob([swCode], { type: 'application/javascript' });
-                    const swUrl = URL.createObjectURL(swBlob);
-                    
-                    const registration = await navigator.serviceWorker.register(swUrl, {
+                    const registration = await navigator.serviceWorker.register('/sw.js', {
                         scope: './'
                     });
+                    console.log('✅ Service worker registrado:', registration);
                     await navigator.serviceWorker.ready;
                     
                     // Mostrar notificación
+                    console.log('🔔 Mostrando notificación:', alert.title);
                     await registration.showNotification(alert.title, {
                         body: alert.message,
                         icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="red" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12,6 12,12 16,14"></polyline></svg>',
@@ -3544,27 +3598,67 @@ class TasksModule {
                             timestamp: Date.now()
                         }
                     });
+                    console.log('✅ Notificación mostrada exitosamente');
                     
                 } catch (swError) {
-                    console.warn('Error con service worker, usando notificación simple:', swError);
+                    console.error('❌ Error con service worker:', swError);
+                    console.log('🔄 Usando notificación simple como fallback');
                     // Fallback a notificación simple
                     new Notification(alert.title, {
                         body: alert.message,
                         icon: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="red" stroke-width="2"%3E%3Ccircle cx="12" cy="12" r="10"%3E%3C/circle%3E%3Cpolyline points="12,6 12,12 16,14"%3E%3C/polyline%3E%3C/svg%3E'
                     });
+                    console.log('✅ Notificación simple mostrada');
                 }
             } else {
+                console.log('⚠️ Service Worker no disponible, usando notificación simple');
                 // Notificación simple si no hay service worker
                 new Notification(alert.title, {
                     body: alert.message,
                     icon: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="red" stroke-width="2"%3E%3Ccircle cx="12" cy="12" r="10"%3E%3C/circle%3E%3Cpolyline points="12,6 12,12 16,14"%3E%3C/polyline%3E%3C/svg%3E'
                 });
+                console.log('✅ Notificación simple mostrada');
             }
             
             console.log('✅ Notificación enviada:', alert.title);
             
+            // Si la página está visible, también hacer sonar una alerta audible
+            if (!document.hidden && document.visibilityState === 'visible') {
+                this.playNotificationSound();
+            }
+            
         } catch (error) {
             console.error('❌ Error enviando notificación:', error);
+        }
+    }
+    
+    // Reproducir sonido de notificación
+    playNotificationSound() {
+        try {
+            // Crear un contexto de audio para el sonido de notificación
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            
+            // Configurar el sonido (frecuencia más alta para que sea más notable)
+            oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+            oscillator.frequency.setValueAtTime(600, audioContext.currentTime + 0.1);
+            oscillator.frequency.setValueAtTime(800, audioContext.currentTime + 0.2);
+            
+            // Configurar volumen
+            gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
+            
+            // Reproducir sonido por 300ms
+            oscillator.start(audioContext.currentTime);
+            oscillator.stop(audioContext.currentTime + 0.3);
+            
+            console.log('🔊 Sonido de notificación reproducido');
+        } catch (error) {
+            console.warn('⚠️ No se pudo reproducir sonido de notificación:', error);
         }
     }
     
@@ -3841,6 +3935,7 @@ class TasksModule {
         return texts[repeatType] || '';
     }
     
+
     // ===== ACTUALIZACIÓN AUTOMÁTICA DE TIEMPO RESTANTE =====
     startTimeRemainingUpdater() {
         // Actualizar cada minuto (60000 ms)
