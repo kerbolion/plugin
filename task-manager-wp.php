@@ -2,8 +2,8 @@
 /**
  * Plugin Name: Framework Modular KLR - Task Manager WP
  * Description: Sistema completo de gestión modular con escenarios, tareas y IA integrado para WordPress
- * Version: 4.0.0
- * Author: Tu Nombre
+ * Version: 5.0.0
+ * Author: Kevinlr
  * Text Domain: framework-modular-wp
  * Domain Path: /languages
  */
