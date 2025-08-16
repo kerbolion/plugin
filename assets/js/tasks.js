@@ -260,7 +260,6 @@ class TasksModule {
         }
         
         this.switchView('today');
-        await this.saveData();
         
         const scenarioName = this.data.scenarios[scenarioId]?.name || 'Desconocido';
         this.api.showMessage(`🎭 Cambiado a escenario: "${scenarioName}"`);
